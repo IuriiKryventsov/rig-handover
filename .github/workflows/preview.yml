@@ -1,0 +1,62 @@
+# Preview for review (ADR 0003): run rig from main, save one page as one HTML file, publish it to
+# this repo's GitHub Pages. The copy is built here and never committed. The lane marker comes from
+# the LANE_MARKER Actions secret; with the secret deleted, a run uploads the same page over the
+# same link with the banner reading "no marker set".
+name: preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      page:
+        description: rig page to copy
+        default: /digest/2026-10-28
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm install -g pnpm@12.16.1
+      - run: pnpm install --frozen-lockfile
+      - name: .env from .env.example, LANE_MARKER from the secret
+        env:
+          LANE_MARKER: ${{ secrets.LANE_MARKER }}
+        run: |
+          grep -v '^LANE_MARKER=' .env.example > .env
+          printf 'LANE_MARKER=%s\n' "$LANE_MARKER" >> .env
+      - name: Run rig and save the page
+        env:
+          PAGE: ${{ inputs.page }}
+        run: |
+          pnpm start > "$RUNNER_TEMP/rig.log" 2>&1 &
+          for i in $(seq 1 60); do curl -fsS -o /dev/null http://localhost:8787/health && break; sleep 1; done
+          mkdir -p _site
+          curl -fsS "http://localhost:8787${PAGE}" -o _site/index.html
+          if grep -q 'no marker set' _site/index.html; then echo "banner: no marker set"; else echo "banner: marker set"; fi
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+          retention-days: 1
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
